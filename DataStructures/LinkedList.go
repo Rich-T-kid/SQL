@@ -18,6 +18,37 @@ type LinkedList[T Ordered] struct {
 	tail *node[T]
 }
 
+type Chainer[T Ordered] interface {
+	// Add an element while maintaining sorted order.
+	//Insert(data T) // O(n)
+	Append(data T)
+	// Remove the first (head) or last (tail) element.
+	PopHead() *node[T]
+	PopTail() *node[T]
+
+	// Find an element (useful for search operations in B+ Trees).
+	Search(data T) *node[T] // log n Time due to sorted property
+
+	// Merge two sorted linked lists into one sorted list (splitting or merging B+ Tree nodes).
+	Merge(other *LinkedList[T]) *node[T]
+
+	Display()
+	// Split the linked list into two parts at the given position (splitting B+ Tree nodes).
+	Split(position int) (Chainer[T], Chainer[T])
+
+	// Get the size of the linked list.
+	Size() uint32
+
+	Sort()
+
+	// Check if the linked list is empty.
+	Empty() bool
+}
+
+func newChainer[T Ordered]() Chainer[T] {
+	return newLinkedList[T]()
+}
+
 // ---------------------------- //
 //       Constructors           //
 // ---------------------------- //
@@ -25,6 +56,10 @@ type LinkedList[T Ordered] struct {
 func newLinkedList[T Ordered]() *LinkedList[T] {
 	return &LinkedList[T]{}
 }
+func (l *LinkedList[T]) Split(position int) (Chainer[T], Chainer[T]) {
+	return nil, nil
+}
+
 func newNode[T Ordered](data T) *node[T] {
 	return &node[T]{
 		value: data,
@@ -47,6 +82,9 @@ func (l *LinkedList[T]) Addfront(data T) {
 }
 
 // Add to end of Linked list
+func (l *LinkedList[T]) Insert(data T) {
+
+}
 func (l *LinkedList[T]) Append(data T) {
 	// case where linked list is empty
 	newNode := newNode(data)
@@ -149,6 +187,11 @@ func (l *LinkedList[T]) Size() uint32 {
 		curr = curr.next
 	}
 	return size
+}
+func (l *LinkedList[T]) Sort() {
+	newhead := l.MergeSort()
+	l.head = newhead
+
 }
 
 func (l *LinkedList[T]) MergeSort() *node[T] {

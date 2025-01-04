@@ -14,6 +14,14 @@ type BloomFilter struct {
 	hashFunc     hash.Hash64
 	elementCount uint
 }
+type Exister interface {
+	Add(d []byte)
+	Contains(d []byte) bool
+}
+
+func cache(size uint, FalsePositve float64) Exister {
+	return NewBloomFilter(size, FalsePositve)
+}
 
 // NewBloomFilter creates a new Bloom filter with the given parameters
 func NewBloomFilter(expectedElements uint, falsePositiveRate float64) *BloomFilter {
