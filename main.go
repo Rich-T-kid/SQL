@@ -1,6 +1,15 @@
 package main
-	import("fmt")
 
-func main(){
-	fmt.Println("hello world")
+import (
+	"fmt"
+
+	ds "github.com/Rich-T-kid/SQL/DataStructures"
+)
+
+func main() {
+	var t ds.LinkedList[int]
+	{
+	}
+	fmt.Println(t)
+	fmt.Println("Finished")
 }
