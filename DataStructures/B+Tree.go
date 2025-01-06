@@ -5,38 +5,40 @@ import (
 	"math"
 )
 
+var (
+	defualtDegree = 4
+)
+
 type Unsigned interface {
 	~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
 }
+
+var defaultDegree = 4
+
+// DiskTree is just an interface
 type DiskTree[T comparable] interface {
-	// n = # of nodes in tree , m
-	//Adds a new element into the B+ tree and maintains the tree property.
-	Insert(data T) //log n
-	// Removes an element from the B+ tree. returns weather element was found or not
-	Delete(data T) bool // log n
-	// Searches for an element in the B+ tree using the key.
-	Search(data T) bool // log n
-	// Merges two nodes during deletion if necessary.
-	Display() // BFS View of Tree O(n)
+	Insert(data T)
+	Delete(data T) bool
+	Search(data T) bool
+	Display()
 }
 
+// BTree is our B+ Tree structure
 type BTree[T Ordered] struct {
 	degree uint16
 	root   *bNode[T]
-	/*
-		d = degree
-		at most d children/ atleast math.floor(m/2) children
-		at most d-1 keys/ atleast (math.floor(m/2) - 1) children
-	*/
-}
-type bNode[T Ordered] struct {
-	keys     []T         // Keys stored in this node, sorted
-	children []*bNode[T] // Pointers to child nodes (empty for leaf nodes)
-	parent   *bNode[T]   // Parent node
-	leaf     bool        // Is this a leaf node?
-	next     *bNode[T]   // Pointer to the next leaf node (for leaf nodes only)
 }
 
+// bNode represents a node in the B+ Tree
+type bNode[T Ordered] struct {
+	keys     []T         // sorted keys
+	children []*bNode[T] // child pointers (empty if leaf)
+	parent   *bNode[T]   // parent pointer
+	leaf     bool        // is leaf node?
+	next     *bNode[T]   // linked list pointer for leaves
+}
+
+// newBNode creates an empty leaf node
 func newBNode[T Ordered]() *bNode[T] {
 	return &bNode[T]{
 		keys:     make([]T, 0),
@@ -45,243 +47,363 @@ func newBNode[T Ordered]() *bNode[T] {
 		next:     nil,
 	}
 }
+
+// newBTree creates a new B+ Tree of the given degree
+func newBTree[T Ordered](degree uint16) *BTree[T] {
+	// Start with an empty leaf as root
+	root := newBNode[T]()
+	root.leaf = true
+	return &BTree[T]{
+		degree: degree,
+		root:   root,
+	}
+}
+
+// Search checks if 'item' exists in the tree
 func (b *BTree[T]) Search(item T) bool {
 	if b.root == nil {
+		// Should not happen if we always init root, but safe check
 		return false
 	}
 	found, _, _ := b.searchNode(b.root, item)
 	return found
 }
 
-/*
-Iterates over all keys. if match is found return true, if target is greater than the current key and its not a leaf node, recusivly check the left subtre
-if no key was greater than the target the key can only be in the right most sub tree. recusivly check right subtree
-*/
+// searchNode returns:
+//
+//	(found=true, node, index) if 'item' exists at node.keys[index]
+//	(found=false, node, index) if 'item' does not exist, but should be inserted at index in node.keys
 func (b *BTree[T]) searchNode(node *bNode[T], target T) (bool, *bNode[T], int) {
-	// currently this is iterative but we can assume that its sorted. Later optimize and include a binary search here
+	if node == nil {
+		return false, nil, 0
+	}
+
 	for i, key := range node.keys {
 		if key == target {
+			// Found exact match
 			return true, node, i
-		} else if target < key {
-			// belongs to left child of current key
+		}
+		if target < key {
+			// Should go to the left child if not leaf
 			if node.leaf {
-				return false, nil, 0
+				return false, node, i
 			}
 			return b.searchNode(node.children[i], target)
 		}
 	}
-	// if it isnt found in first m-1 sub children then its in the right most key
-	if !node.leaf {
-		return b.searchNode(node.children[len(node.children)-1], target)
+	// If target > all keys in node
+	if node.leaf {
+		return false, node, len(node.keys)
 	}
-	return false, nil, 0
-
+	return b.searchNode(node.children[len(node.children)-1], target)
 }
 
-// Searches for element, if element exist nothing happends
-// adds  item to key slice at correct node
-// if over fill has happened at node it splits the node and reoganized the tree
+// Insert adds a new 'item' to the B+ Tree
 func (b *BTree[T]) Insert(item T) {
-	// Locate the leaf node and the position to insert
-	exist, node, index := b.searchNode(b.root, item)
-	if exist { // no need to add duplicates
+	// If tree is uninitialized (edge case)
+	if b.root == nil {
+		b.root = newBNode[T]()
+		b.root.keys = append(b.root.keys, item)
 		return
 	}
 
-	// Insert the key at the correct position
-	//The first append copies keys before the insertion index.
-	//The second append adds the new key and the remaining keys.
+	// 1. Find the correct position (leaf node + index)
+	exist, node, index := b.searchNode(b.root, item)
+	if exist {
+		// No duplicates
+		return
+	}
+	if node == nil {
+		panic("searchNode returned nil node on Insert")
+	}
+	// 2. Insert the key in the leaf at 'index'
 	node.keys = append(node.keys[:index], append([]T{item}, node.keys[index:]...)...)
 
-	// Handle overfill (splitting)
+	// 3. Check for overfill => split
 	if node.overFill(b.degree) {
 		b.Split(node)
 	}
 }
 
+// Delete removes 'item' from the tree, returning true if found/deleted
+// Public Delete: wraps our internal recursive method.
 func (b *BTree[T]) Delete(item T) bool {
-
-	exist, node, indexToRemove := b.searchNode(b.root, item)
-	if !exist { // if it isnt found no need to do anything
-		return false
+	if b.root == nil {
+		return false // Empty tree
 	}
-	// remove element from slice
-	node.keys = append(node.keys[:indexToRemove], node.keys[indexToRemove+1:]...)
-	//if undersized merge
-	if node.underFill(b.degree) {
+
+	deleted := b.deleteKey(b.root, item)
+	if !deleted {
+		return false // Key not found
+	}
+
+	// If the root became empty and has children, shrink the tree height
+	if len(b.root.keys) == 0 && len(b.root.children) > 0 {
+		b.root = b.root.children[0]
+		b.root.parent = nil
+	}
+	return true
+}
+
+// Recursively delete 'item' from 'node' or its children.
+func (b *BTree[T]) deleteKey(node *bNode[T], item T) bool {
+	// 1. Find the position 'i' of 'item' or where 'item' should be in node.keys
+	i := 0
+	for i < len(node.keys) && node.keys[i] < item {
+		i++
+	}
+
+	// 2. If 'item' found in node.keys[i]
+	if i < len(node.keys) && node.keys[i] == item {
+		// Case A: node is a LEAF
+		if node.leaf {
+			// Remove the key from the leaf
+			node.keys = append(node.keys[:i], node.keys[i+1:]...)
+		} else {
+			// Case B: node is INTERNAL
+			// We must swap 'item' with the predecessor or successor key
+			// and then delete that key from the child leaf.
+
+			// We'll pick the predecessor for demonstration:
+			predNode := b.getPredecessorNode(node.children[i]) // rightmost leaf in left subtree
+			predKey := predNode.keys[len(predNode.keys)-1]
+
+			// Swap
+			node.keys[i] = predKey
+			// Recursively delete 'predKey' from predNode (which is a leaf)
+			b.deleteKey(predNode, predKey)
+		}
+	} else {
+		// Not found in this node
+		// If leaf, it's not in the tree
+		if node.leaf {
+			return false
+		}
+		// Otherwise, descend into children[i]
+		b.deleteKey(node.children[i], item)
+	}
+
+	// After removal, check if node underflows
+	if node != nil && node != b.root && node.underFill(b.degree) {
 		b.Merge(node)
 	}
 	return true
 }
 
+// getPredecessorNode traverses to the rightmost leaf in 'curNode'
+func (b *BTree[T]) getPredecessorNode(curNode *bNode[T]) *bNode[T] {
+	// We go down curNode's last child pointer repeatedly
+	// until we reach a leaf. That leaf's last key is the predecessor.
+	for !curNode.leaf {
+		curNode = curNode.children[len(curNode.children)-1]
+	}
+	return curNode
+}
+
+// overFill checks if node has >= 'degree' keys
+func (n *bNode[T]) overFill(degree uint16) bool {
+	return len(n.keys) >= int(degree)
+}
+
+// underFill checks if node has fewer than floor(degree/2) keys
+// e.g., for degree=4, node must have >=2 keys. So if <2 => underfill
+func (n *bNode[T]) underFill(degree uint16) bool {
+	minKeys := int(math.Ceil(float64(degree)/2.0)) - 1
+	// e.g., degree=4 => minKeys=1
+	return len(n.keys) < minKeys
+}
+
+// Split handles overfilled nodes
 func (b *BTree[T]) Split(node *bNode[T]) {
 	mid := len(node.keys) / 2
 	middleKey := node.keys[mid]
 
-	// Create a new sibling node for the right half
 	sibling := &bNode[T]{
-		keys:     append([]T{}, node.keys[mid+1:]...),
-		children: append([]*bNode[T]{}, node.children[mid+1:]...),
-		leaf:     node.leaf,
-		parent:   node.parent,
+		keys:   append([]T{}, node.keys[mid+1:]...),
+		leaf:   node.leaf,
+		parent: node.parent,
 	}
 
-	// Update the current node to keep the left half
+	// Left node keeps left half
 	node.keys = node.keys[:mid]
-	node.children = node.children[:mid+1]
 
-	// If it's a leaf, adjust the linked list pointers
-	if node.leaf {
+	if !node.leaf {
+		// Split children for internal node
+		sibling.children = append([]*bNode[T]{}, node.children[mid+1:]...)
+		node.children = node.children[:mid+1]
+
+		// Reassign parents
+		for _, child := range sibling.children {
+			child.parent = sibling
+		}
+	} else {
+		// Leaf node: fix 'next' pointer
 		sibling.next = node.next
 		node.next = sibling
 	}
 
-	// Handle propagation to the parent
 	if node.parent == nil {
-		// Splitting the root: Create a new root
-		b.root = &bNode[T]{
+		// Splitting root
+		newRoot := &bNode[T]{
 			keys:     []T{middleKey},
-			children: []*bNode[T]{node, sibling},
 			leaf:     false,
+			children: []*bNode[T]{node, sibling},
 		}
-		node.parent = b.root
-		sibling.parent = b.root
+		node.parent = newRoot
+		sibling.parent = newRoot
+		b.root = newRoot
 	} else {
-		// Insert the middle key into the parent
+		// Insert 'middleKey' into parent
 		parent := node.parent
-		insertIndex := 0
-		for insertIndex < len(parent.keys) && parent.keys[insertIndex] < middleKey {
-			insertIndex++
-		}
-		parent.keys = append(parent.keys[:insertIndex], append([]T{middleKey}, parent.keys[insertIndex:]...)...)
-		parent.children = append(parent.children[:insertIndex+1], append([]*bNode[T]{sibling}, parent.children[insertIndex+1:]...)...)
 
-		// Check for overfill in the parent
+		insertPos := 0
+		for insertPos < len(parent.keys) && parent.keys[insertPos] < middleKey {
+			insertPos++
+		}
+		parent.keys = append(parent.keys[:insertPos],
+			append([]T{middleKey}, parent.keys[insertPos:]...)...,
+		)
+
+		parent.children = append(
+			parent.children[:insertPos+1],
+			append([]*bNode[T]{sibling}, parent.children[insertPos+1:]...)...,
+		)
+
 		if parent.overFill(b.degree) {
 			b.Split(parent)
 		}
 	}
 }
 
-// Helper function for delete
-
+// Merge handles underfilled nodes
 func (b *BTree[T]) Merge(node *bNode[T]) {
-	// Access the parent node directly
 	parent := node.parent
 	if parent == nil {
-		return // No parent means no merging is required
+		// If node is root, no merge needed
+		return
 	}
 
-	// Find the index of the node in its parent's children
-	var nodeIndex int
-	for i, child := range parent.children {
-		if child == node {
-			nodeIndex = i
-			break
-		}
-	}
-
-	// Determine left or right sibling
-	var sibling *bNode[T]
-	var isLeftSibling bool
+	nodeIndex := findChildIndex(parent, node)
+	// If we can merge with left sibling, do so; else merge with right sibling
 	if nodeIndex > 0 {
-		// Prefer left sibling if it exists
-		sibling = parent.children[nodeIndex-1]
-		isLeftSibling = true
-	} else if nodeIndex < len(parent.children)-1 {
-		// Otherwise, use right sibling
-		sibling = parent.children[nodeIndex+1]
-		isLeftSibling = false
+		leftSibling := parent.children[nodeIndex-1]
+		mergeRightIntoLeft(leftSibling, node, parent, nodeIndex-1, b)
+	} else {
+		rightSibling := parent.children[nodeIndex+1]
+		mergeRightIntoLeft(node, rightSibling, parent, nodeIndex, b)
 	}
+}
 
-	// Merge logic
-	if sibling != nil {
-		if isLeftSibling {
-			// Merge node into left sibling
-			sibling.keys = append(sibling.keys, parent.keys[nodeIndex-1])
-			sibling.keys = append(sibling.keys, node.keys...)
-			if !node.leaf {
-				sibling.children = append(sibling.children, node.children...)
-			}
-			parent.keys = append(parent.keys[:nodeIndex-1], parent.keys[nodeIndex:]...)
-			parent.children = append(parent.children[:nodeIndex], parent.children[nodeIndex+1:]...)
-		} else {
-			// Merge right sibling into node
-			node.keys = append(node.keys, parent.keys[nodeIndex])
-			node.keys = append(node.keys, sibling.keys...)
-			if !node.leaf {
-				node.children = append(node.children, sibling.children...)
-			}
-			parent.keys = append(parent.keys[:nodeIndex], parent.keys[nodeIndex+1:]...)
-			parent.children = append(parent.children[:nodeIndex+1], parent.children[nodeIndex+2:]...)
+// findChildIndex locates 'child' in 'parent.children'
+func findChildIndex[T Ordered](parent *bNode[T], child *bNode[T]) int {
+	for i, c := range parent.children {
+		if c == child {
+			return i
 		}
 	}
+	return -1
+}
 
-	// Handle parent underfill
+// mergeRightIntoLeft merges 'right' node into 'left' node
+// then removes 'right' from the parent
+func mergeRightIntoLeft[T Ordered](
+	left *bNode[T],
+	right *bNode[T],
+	parent *bNode[T],
+	parentKeyIndex int,
+	b *BTree[T],
+) {
+	// Key in parent that separates left and right
+	separatingKey := parent.keys[parentKeyIndex]
+
+	// If not leaf, copy separatingKey into left
+	if !left.leaf {
+		left.keys = append(left.keys, separatingKey)
+	}
+	// Merge right.keys into left
+	left.keys = append(left.keys, right.keys...)
+
+	if !left.leaf {
+		// Merge children
+		left.children = append(left.children, right.children...)
+		for _, child := range right.children {
+			child.parent = left
+		}
+	} else {
+		// If leaf, fix the leaf chain
+		left.next = right.next
+	}
+
+	// Remove 'separatingKey' from parent
+	parent.keys = append(
+		parent.keys[:parentKeyIndex],
+		parent.keys[parentKeyIndex+1:]...,
+	)
+
+	// Remove 'right' pointer from parent.children
+	rightIndex := findChildIndex(parent, right)
+	parent.children = append(
+		parent.children[:rightIndex],
+		parent.children[rightIndex+1:]...,
+	)
+
+	// Check if parent is underfilled
 	if parent.underFill(b.degree) {
 		if parent == b.root && len(parent.keys) == 0 {
-			// Special case: root underflows and needs to shrink
+			// If parent is root and empty => shrink
 			b.root = parent.children[0]
 			b.root.parent = nil
 		} else {
-			b.Merge(parent) // Recursively handle parent merging
+			b.Merge(parent)
 		}
 	}
 }
 
-// Print out level order of B+ Tree
+// Display prints the tree in a level-order (BFS) format
 func (b *BTree[T]) Display() {
 	if b.root == nil {
-		fmt.Println("Empty Tree. No levels to Print")
+		fmt.Println("Empty tree. No levels to print.")
 		return
 	}
 	queue := NewQueue[*bNode[T]]()
 	queue.Enqueue(b.root)
-	levelMarker := NewQueue[*bNode[T]]() // To track level separation
-	levelMarker.Enqueue(nil)             // Marker for level end
+	queue.Enqueue(nil)
 
-	var line string
-	count := 0
+	level := 0
+	var line []string
 	for !queue.IsEmpty() {
-		currentNode := queue.Dequeue()
-		if currentNode == nil {
-			fmt.Printf("Level %d of B+ Tree: %s\n", count, line)
-			line = ""
-			count++
-
-			// If there are more nodes in the queue, add another level marker
+		node := queue.Dequeue()
+		if node == nil {
+			fmt.Printf("Level %d: %s\n", level, join(line, ", "))
+			line = []string{}
+			level++
 			if !queue.IsEmpty() {
 				queue.Enqueue(nil)
 			}
 			continue
 		}
-		// Append keys of the current node
-		for _, key := range currentNode.keys {
-			line += fmt.Sprintf(" %v", key)
+		// Collect keys for this level
+		for _, key := range node.keys {
+			line = append(line, fmt.Sprintf("%v", key))
 		}
-
-		// Enqueue children of the current node
-		for _, child := range currentNode.children {
+		// Enqueue children
+		for _, child := range node.children {
 			queue.Enqueue(child)
 		}
 	}
 }
 
-func (b *bNode[T]) overFill(degree uint16) bool {
-	return uint16(len(b.keys)) >= degree
+// join is a simple utility to join string slices with a separator
+func join(elements []string, sep string) string {
+	switch len(elements) {
+	case 0:
+		return ""
+	case 1:
+		return elements[0]
+	}
+	out := elements[0]
+	for i := 1; i < len(elements); i++ {
+		out += sep + elements[i]
+	}
+	return out
 }
-func (b *bNode[T]) underFill(degree uint16) bool {
-	minKeys := uint16(math.Ceil(float64(degree)/2)) - 1
-	return uint16(len(b.keys)) < minKeys
-}
-
-/*
-degree T
-all Nodes exepct root must have t-1 keys
-root must contain a minimum of 1 key ROOT MAY NEVER BE EMPTY
-all nodes can contain at most 2t - 1 keys
-
-all keys must be in sorted order
-
-insertions happend upward/ I.E insertions and deletions happend from the root
-*/
